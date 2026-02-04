@@ -267,7 +267,7 @@ describe('run — post-as: issue-comment', () => {
 		setEnv({ INPUT_POST_AS: 'issue-comment', INPUT_ISSUE_NUMBER: '42' });
 		await run();
 		assert.strictEqual(mockPostIssueComment.mock.callCount(), 1);
-		assert.strictEqual(mockPostIssueComment.mock.calls[0].arguments[0], 42);
+		assert.strictEqual((mockPostIssueComment.mock.calls[0] as any).arguments[0], 42);
 	});
 
 	it('does not post comment when issue-number is missing', async () => {
@@ -301,16 +301,16 @@ describe('run — Aurora integration', () => {
 		setEnv({ AURORA_API_KEY: 'ak-123', AURORA_TEAM_ID: 'team-456' });
 		await run();
 		assert.strictEqual(mockFetch.mock.callCount(), 1);
-		const [url, opts] = mockFetch.mock.calls[0].arguments;
-		assert.strictEqual(url, 'https://app.aurora-coach.com/api/teams/team-456/metrics');
-		assert.strictEqual(opts.method, 'POST');
-		assert.strictEqual(opts.headers['Authorization'], 'Bearer ak-123');
+		const args = (mockFetch.mock.calls[0] as any).arguments;
+		assert.strictEqual(args[0], 'https://app.aurora-coach.com/api/teams/team-456/metrics');
+		assert.strictEqual(args[1].method, 'POST');
+		assert.strictEqual(args[1].headers['Authorization'], 'Bearer ak-123');
 	});
 
 	it('sends correct payload shape', async () => {
 		setEnv({ AURORA_API_KEY: 'ak-123', AURORA_TEAM_ID: 'team-456' });
 		await run();
-		const body = JSON.parse(mockFetch.mock.calls[0].arguments[1].body);
+		const body = JSON.parse((mockFetch.mock.calls[0] as any).arguments[1].body);
 		assert.strictEqual(body.source, 'github');
 		assert.ok(body.periodStart);
 		assert.ok(body.periodEnd);
