@@ -59,9 +59,9 @@ Adjust thresholds to match your team's context:
 
 ### Aurora Coach Integration
 
-An upcoming feature of this Action is integration with [Aurora Coach], the AI coach for software engineering teams (https://aurora-coach.com), where you can push these metrics to the AI coach to include as context for coaching and continuous improvement analysis and recommendations. 
+An upcoming feature of this Action is integration with [Aurora Coach](https://aurora-coach.com), the AI coach for software engineering teams, where you can push these metrics to include as context for coaching, continuous improvement analysis, and recommendations.
 
-These variables are currently available, but not in use at the moment.
+These inputs are available but not yet active:
 | Input | Description |
 |-------|-------------|
 | `aurora-api-key` | Aurora Coach API key (sends metrics to Aurora) |
