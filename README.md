@@ -59,14 +59,13 @@ Adjust thresholds to match your team's context:
 
 ### Aurora Coach Integration
 
-You can optionally push metrics to [Aurora Coach](https://aurora-coach.com) for storage and tracking:
+An upcoming feature of this Action is integration with [Aurora Coach], the AI coach for software engineering teams (https://aurora-coach.com), where you can push these metrics to the AI coach to include as context for coaching and continuous improvement analysis and recommendations. 
 
+These variables are currently available, but not in use at the moment.
 | Input | Description |
 |-------|-------------|
 | `aurora-api-key` | Aurora Coach API key (sends metrics to Aurora) |
 | `aurora-team-id` | Aurora Coach team ID (required if api key is set) |
-
-This is a one-way data push — the action sends your metrics to Aurora but does not receive anything back. The health card output is the same regardless of whether Aurora is configured.
 
 ## Outputs
 
