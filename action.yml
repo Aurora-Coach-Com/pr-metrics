@@ -1,0 +1,70 @@
+name: 'PR Metrics Health Card'
+description: 'Generate health metrics from GitHub PR activity'
+author: 'Aurora Coach'
+
+branding:
+  icon: 'activity'
+  color: 'purple'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access (defaults to GITHUB_TOKEN)'
+    required: false
+    default: ${{ github.token }}
+  sprint-length-days:
+    description: 'Length of sprint in days'
+    required: false
+    default: '14'
+  post-as:
+    description: 'Where to post the health card: summary or issue-comment'
+    required: false
+    default: 'summary'
+  issue-number:
+    description: 'Issue number to post comment to (required if post-as is issue-comment)'
+    required: false
+  aurora-api-key:
+    description: 'Aurora Coach API key for enhanced insights (optional)'
+    required: false
+  aurora-team-id:
+    description: 'Aurora Coach team ID (required if aurora-api-key is set)'
+    required: false
+
+  # Threshold configuration (adjust to your team's context)
+  cycle-time-warning-hours:
+    description: 'Cycle time threshold for warning (default: 72 = 3 days)'
+    required: false
+    default: '72'
+  cycle-time-critical-hours:
+    description: 'Cycle time threshold for critical (default: 168 = 7 days)'
+    required: false
+    default: '168'
+  review-warning-hours:
+    description: 'Review turnaround threshold for warning (default: 24)'
+    required: false
+    default: '24'
+  review-critical-hours:
+    description: 'Review turnaround threshold for critical (default: 48)'
+    required: false
+    default: '48'
+  wip-warning-ratio:
+    description: 'WIP per contributor ratio for warning (default: 2)'
+    required: false
+    default: '2'
+  wip-critical-ratio:
+    description: 'WIP per contributor ratio for critical (default: 3)'
+    required: false
+    default: '3'
+
+outputs:
+  health-card:
+    description: 'The generated health card markdown'
+  cycle-time-hours:
+    description: 'Median cycle time in hours'
+  throughput:
+    description: 'Number of PRs merged in the sprint'
+  review-turnaround-hours:
+    description: 'Median time to first review in hours'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

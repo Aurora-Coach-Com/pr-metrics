@@ -1,0 +1,31 @@
+{
+  "name": "@aurora-coach/sprint-health-action",
+  "version": "0.1.0",
+  "description": "GitHub Action that generates sprint health cards from PR metrics",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "github-action",
+    "sprint-health",
+    "developer-metrics",
+    "aurora-coach"
+  ],
+  "author": "Aurora Coach",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vercel/ncc": "^0.38.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.7.1",
+    "typescript": "^5.0.0"
+  }
+}
