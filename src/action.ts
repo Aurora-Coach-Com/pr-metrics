@@ -5,7 +5,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { getConfig, Config } from './config';
-import { GitHubClient } from './github-client';
+import { GitHubClient, ShipEvent } from './github-client';
 import { calculateMetrics, SprintMetrics } from './metrics';
 import { renderHealthCard, AURORA_LOGO } from './card';
 
@@ -33,17 +33,44 @@ export async function run(): Promise<void> {
 		return;
 	}
 
-	// Fetch review data for each PR
-	console.log('📥 Fetching review data...');
-	const reviews = await client.getReviewsForPRs(pullRequests.map((pr) => pr.number));
+	// Fetch all data in parallel where possible
+	const prNumbers = pullRequests.map((pr) => pr.number);
+	console.log('📥 Fetching reviews + PR sizes, open PRs, workflow runs, deployments...');
 
-	// Fetch open PRs for WIP calculation
-	console.log('📥 Fetching open PRs for WIP...');
-	const openPRs = await client.getOpenPRs();
+	const [reviewsAndSizes, openPRs, workflowRuns, deployments] = await Promise.all([
+		client.getReviewsAndSizes(prNumbers),
+		client.getOpenPRs(),
+		client.getWorkflowRuns(config.periodStart, config.periodEnd, config.workflowFilter),
+		client.getDeployments(config.periodStart, config.periodEnd, config.deploymentEnvironment),
+	]);
+
+	const reviews = reviewsAndSizes.reviewsByPR;
+	const prSizes = reviewsAndSizes.sizesByPR;
+
+	// Ship events: prefer deployments, fall back to releases
+	let shipEvents: ShipEvent[] = [];
+	if (deployments.length > 0) {
+		shipEvents = deployments;
+	} else {
+		shipEvents = await client.getReleases(config.periodStart, config.periodEnd);
+	}
+
+	// First commit dates only needed if we have ship events
+	let firstCommitDates = new Map<number, Date>();
+	if (shipEvents.length > 0) {
+		console.log('📥 Fetching first commit dates...');
+		firstCommitDates = await client.getFirstCommitDates(prNumbers);
+	}
 
 	// Calculate metrics
 	console.log('🧮 Calculating metrics...');
-	const metrics = calculateMetrics(pullRequests, reviews, openPRs);
+	const metrics = calculateMetrics(pullRequests, reviews, openPRs, {
+		prSizes,
+		workflowRuns,
+		shipEvents,
+		firstCommitDates,
+		periodDays: config.sprintLengthDays,
+	});
 
 	// Render health card
 	const healthCard = renderHealthCard(config, metrics, config.thresholds);
@@ -94,6 +121,18 @@ function outputResults(config: Config, healthCard: string, metrics: SprintMetric
 			core.setOutput('cycle-time-hours', metrics.cycleTimeMedianHours.toFixed(1));
 			core.setOutput('throughput', metrics.throughputCount);
 			core.setOutput('review-turnaround-hours', metrics.reviewTurnaroundMedianHours.toFixed(1));
+			if (metrics.prSizeMedian !== null) {
+				core.setOutput('pr-size-median', Math.round(metrics.prSizeMedian));
+			}
+			if (metrics.buildSuccessRate !== null) {
+				core.setOutput('build-success-rate', metrics.buildSuccessRate);
+			}
+			if (metrics.shipFrequency !== null) {
+				core.setOutput('ship-frequency', metrics.shipFrequency.toFixed(2));
+			}
+			if (metrics.leadTimeMedianHours !== null) {
+				core.setOutput('lead-time-hours', metrics.leadTimeMedianHours.toFixed(1));
+			}
 		}
 	}
 }
@@ -131,11 +170,20 @@ async function pushToAurora(config: Config, metrics: SprintMetrics): Promise<voi
 			cycleTimeP90Hours: metrics.cycleTimeP90Hours,
 			throughputCount: metrics.throughputCount,
 			wipCount: metrics.wipCount,
+			prSizeMedian: metrics.prSizeMedian,
+			leadTimeMedianHours: metrics.leadTimeMedianHours,
 		},
 		collaboration: {
 			reviewTurnaroundHours: metrics.reviewTurnaroundMedianHours,
 			collaboratorCount: metrics.collaboratorCount,
 			concentrationRatio: metrics.concentrationRatio,
+		},
+		operations: {
+			buildSuccessRate: metrics.buildSuccessRate,
+			buildTotalRuns: metrics.buildTotalRuns,
+			shipFrequency: metrics.shipFrequency,
+			shipCount: metrics.shipCount,
+			shipSource: metrics.shipSource,
 		},
 		raw: {
 			repoName: `${config.owner}/${config.repo}`,

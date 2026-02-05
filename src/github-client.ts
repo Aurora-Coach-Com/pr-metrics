@@ -26,6 +26,20 @@ export interface Review {
 	commentCount: number;
 }
 
+export interface WorkflowRunSummary {
+	totalRuns: number;
+	successCount: number;
+	failureCount: number;
+}
+
+export interface ShipEvent {
+	id: number;
+	sha: string;
+	createdAt: Date;
+	source: 'deployment' | 'release';
+	label: string;
+}
+
 /**
  * Run promises with concurrency limit
  */
@@ -149,21 +163,32 @@ export class GitHubClient {
 	}
 
 	/**
-	 * Get reviews for multiple PRs - parallelized with concurrency limit
+	 * Get reviews AND PR size for multiple PRs in a single pass.
+	 * Piggybacks pulls.get (for additions/deletions) onto the existing
+	 * review+comment fetch so we don't need a separate per-PR round trip.
 	 */
-	async getReviewsForPRs(prNumbers: number[]): Promise<Map<number, Review[]>> {
+	async getReviewsAndSizes(prNumbers: number[]): Promise<{
+		reviewsByPR: Map<number, Review[]>;
+		sizesByPR: Map<number, { additions: number; deletions: number }>;
+	}> {
 		const reviewsByPR = new Map<number, Review[]>();
+		const sizesByPR = new Map<number, { additions: number; deletions: number }>();
 
-		const fetchReviewsForPR = async (prNumber: number): Promise<{ prNumber: number; reviews: Review[] }> => {
+		const fetchForPR = async (prNumber: number) => {
 			try {
-				// Fetch reviews and comments in parallel
-				const [reviewsResponse, commentsResponse] = await Promise.all([
+				// Fetch reviews, comments, AND PR details in parallel
+				const [reviewsResponse, commentsResponse, prResponse] = await Promise.all([
 					this.octokit.rest.pulls.listReviews({
 						owner: this.owner,
 						repo: this.repo,
 						pull_number: prNumber,
 					}),
 					this.octokit.rest.pulls.listReviewComments({
+						owner: this.owner,
+						repo: this.repo,
+						pull_number: prNumber,
+					}),
+					this.octokit.rest.pulls.get({
 						owner: this.owner,
 						repo: this.repo,
 						pull_number: prNumber,
@@ -189,19 +214,32 @@ export class GitHubClient {
 					nonAuthorReviews.forEach((r) => (r.commentCount += perReview));
 				}
 
-				return { prNumber, reviews };
+				return {
+					prNumber,
+					reviews,
+					additions: prResponse.data.additions,
+					deletions: prResponse.data.deletions,
+				};
 			} catch {
-				return { prNumber, reviews: [] };
+				return { prNumber, reviews: [] as Review[], additions: 0, deletions: 0 };
 			}
 		};
 
-		// Fetch all reviews in parallel with concurrency limit
-		const results = await runWithConcurrency(prNumbers, fetchReviewsForPR, CONCURRENCY_LIMIT);
+		const results = await runWithConcurrency(prNumbers, fetchForPR, CONCURRENCY_LIMIT);
 
-		for (const { prNumber, reviews } of results) {
+		for (const { prNumber, reviews, additions, deletions } of results) {
 			reviewsByPR.set(prNumber, reviews);
+			sizesByPR.set(prNumber, { additions, deletions });
 		}
 
+		return { reviewsByPR, sizesByPR };
+	}
+
+	/**
+	 * Get reviews for multiple PRs - parallelized with concurrency limit
+	 */
+	async getReviewsForPRs(prNumbers: number[]): Promise<Map<number, Review[]>> {
+		const { reviewsByPR } = await this.getReviewsAndSizes(prNumbers);
 		return reviewsByPR;
 	}
 
@@ -244,5 +282,219 @@ export class GitHubClient {
 			issue_number: issueNumber,
 			body,
 		});
+	}
+
+	/**
+	 * Get PR size details (additions + deletions) for multiple PRs
+	 */
+	async getPRDetails(prNumbers: number[]): Promise<Map<number, { additions: number; deletions: number }>> {
+		const result = new Map<number, { additions: number; deletions: number }>();
+
+		const fetchPR = async (prNumber: number) => {
+			try {
+				const response = await this.octokit.rest.pulls.get({
+					owner: this.owner,
+					repo: this.repo,
+					pull_number: prNumber,
+				});
+				return {
+					prNumber,
+					additions: response.data.additions,
+					deletions: response.data.deletions,
+				};
+			} catch {
+				return { prNumber, additions: 0, deletions: 0 };
+			}
+		};
+
+		const results = await runWithConcurrency(prNumbers, fetchPR, CONCURRENCY_LIMIT);
+		for (const { prNumber, additions, deletions } of results) {
+			result.set(prNumber, { additions, deletions });
+		}
+
+		return result;
+	}
+
+	/**
+	 * Get workflow run summary for a date range.
+	 * Caps at 5 pages (500 runs) to avoid slow pagination on active repos.
+	 */
+	async getWorkflowRuns(
+		startDate: Date,
+		endDate: Date,
+		workflowFilter?: string
+	): Promise<WorkflowRunSummary | null> {
+		try {
+			const created = `${startDate.toISOString().split('T')[0]}..${endDate.toISOString().split('T')[0]}`;
+
+			const params = {
+				owner: this.owner,
+				repo: this.repo,
+				status: 'completed' as const,
+				created,
+				per_page: 100,
+			};
+
+			const endpoint = workflowFilter
+				? this.octokit.rest.actions.listWorkflowRuns
+				: this.octokit.rest.actions.listWorkflowRunsForRepo;
+
+			const requestParams = workflowFilter
+				? { ...params, workflow_id: workflowFilter }
+				: params;
+
+			const items: any[] = [];
+			const MAX_PAGES = 5;
+			let page = 0;
+
+			const iterator = this.octokit.paginate.iterator(endpoint as any, requestParams);
+			for await (const response of iterator) {
+				items.push(...response.data);
+				page++;
+				if (page >= MAX_PAGES) break;
+			}
+
+			// Exclude cancelled and skipped runs
+			const relevant = items.filter(
+				(r: any) => r.conclusion !== 'cancelled' && r.conclusion !== 'skipped'
+			);
+
+			if (relevant.length === 0) return null;
+
+			const successCount = relevant.filter((r: any) => r.conclusion === 'success').length;
+			const failureCount = relevant.length - successCount;
+
+			return {
+				totalRuns: relevant.length,
+				successCount,
+				failureCount,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Get deployments within a date range.
+	 * Uses iterator with early termination — stops once we pass startDate.
+	 */
+	async getDeployments(startDate: Date, endDate: Date, environment?: string): Promise<ShipEvent[]> {
+		try {
+			const params = {
+				owner: this.owner,
+				repo: this.repo,
+				per_page: 100,
+				...(environment ? { environment } : {}),
+			};
+
+			const results: ShipEvent[] = [];
+
+			const iterator = this.octokit.paginate.iterator(
+				this.octokit.rest.repos.listDeployments,
+				params,
+			);
+
+			outer:
+			for await (const response of iterator) {
+				for (const d of response.data) {
+					const created = new Date(d.created_at);
+					// Deployments are newest-first; stop when we're past the window
+					if (created < startDate) break outer;
+					if (created <= endDate) {
+						results.push({
+							id: d.id,
+							sha: d.sha,
+							createdAt: created,
+							source: 'deployment',
+							label: d.environment || 'unknown',
+						});
+					}
+				}
+			}
+
+			return results;
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Get releases within a date range (excludes drafts).
+	 * Uses iterator with early termination — stops once we pass startDate.
+	 */
+	async getReleases(startDate: Date, endDate: Date): Promise<ShipEvent[]> {
+		try {
+			const results: ShipEvent[] = [];
+
+			const iterator = this.octokit.paginate.iterator(
+				this.octokit.rest.repos.listReleases,
+				{
+					owner: this.owner,
+					repo: this.repo,
+					per_page: 100,
+				},
+			);
+
+			outer:
+			for await (const response of iterator) {
+				for (const r of response.data) {
+					if (r.draft) continue;
+					const published = r.published_at ? new Date(r.published_at) : null;
+					if (!published) continue;
+					// Releases are newest-first; stop when we're past the window
+					if (published < startDate) break outer;
+					if (published <= endDate) {
+						results.push({
+							id: r.id,
+							sha: r.target_commitish || '',
+							createdAt: published,
+							source: 'release',
+							label: r.tag_name || 'unknown',
+						});
+					}
+				}
+			}
+
+			return results;
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Get the date of the first commit for each PR
+	 */
+	async getFirstCommitDates(prNumbers: number[]): Promise<Map<number, Date>> {
+		const result = new Map<number, Date>();
+
+		const fetchFirstCommit = async (prNumber: number) => {
+			try {
+				const response = await this.octokit.rest.pulls.listCommits({
+					owner: this.owner,
+					repo: this.repo,
+					pull_number: prNumber,
+					per_page: 1,
+				});
+				const firstCommit = response.data[0];
+				if (firstCommit) {
+					const date = firstCommit.commit.author?.date || firstCommit.commit.committer?.date;
+					if (date) {
+						return { prNumber, date: new Date(date) };
+					}
+				}
+				return { prNumber, date: null };
+			} catch {
+				return { prNumber, date: null };
+			}
+		};
+
+		const results = await runWithConcurrency(prNumbers, fetchFirstCommit, CONCURRENCY_LIMIT);
+		for (const { prNumber, date } of results) {
+			if (date) {
+				result.set(prNumber, date);
+			}
+		}
+
+		return result;
 	}
 }

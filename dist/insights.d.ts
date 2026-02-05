@@ -7,7 +7,7 @@
 import { SprintMetrics } from './metrics';
 import { Thresholds } from './config';
 export interface Insight {
-    type: 'knowledge-silo' | 'cycle-time-regression' | 'wip-overload' | 'review-bottleneck' | 'shallow-reviews';
+    type: 'knowledge-silo' | 'cycle-time-regression' | 'wip-overload' | 'review-bottleneck' | 'shallow-reviews' | 'large-prs' | 'build-failures' | 'slow-lead-time';
     severity: 'info' | 'warning' | 'critical';
     message: string;
 }

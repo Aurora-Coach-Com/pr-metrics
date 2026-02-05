@@ -29989,15 +29989,40 @@ async function run() {
         outputResults(config, emptyCard, null);
         return;
     }
-    // Fetch review data for each PR
-    console.log('📥 Fetching review data...');
-    const reviews = await client.getReviewsForPRs(pullRequests.map((pr) => pr.number));
-    // Fetch open PRs for WIP calculation
-    console.log('📥 Fetching open PRs for WIP...');
-    const openPRs = await client.getOpenPRs();
+    // Fetch all data in parallel where possible
+    const prNumbers = pullRequests.map((pr) => pr.number);
+    console.log('📥 Fetching reviews + PR sizes, open PRs, workflow runs, deployments...');
+    const [reviewsAndSizes, openPRs, workflowRuns, deployments] = await Promise.all([
+        client.getReviewsAndSizes(prNumbers),
+        client.getOpenPRs(),
+        client.getWorkflowRuns(config.periodStart, config.periodEnd, config.workflowFilter),
+        client.getDeployments(config.periodStart, config.periodEnd, config.deploymentEnvironment),
+    ]);
+    const reviews = reviewsAndSizes.reviewsByPR;
+    const prSizes = reviewsAndSizes.sizesByPR;
+    // Ship events: prefer deployments, fall back to releases
+    let shipEvents = [];
+    if (deployments.length > 0) {
+        shipEvents = deployments;
+    }
+    else {
+        shipEvents = await client.getReleases(config.periodStart, config.periodEnd);
+    }
+    // First commit dates only needed if we have ship events
+    let firstCommitDates = new Map();
+    if (shipEvents.length > 0) {
+        console.log('📥 Fetching first commit dates...');
+        firstCommitDates = await client.getFirstCommitDates(prNumbers);
+    }
     // Calculate metrics
     console.log('🧮 Calculating metrics...');
-    const metrics = (0, metrics_1.calculateMetrics)(pullRequests, reviews, openPRs);
+    const metrics = (0, metrics_1.calculateMetrics)(pullRequests, reviews, openPRs, {
+        prSizes,
+        workflowRuns,
+        shipEvents,
+        firstCommitDates,
+        periodDays: config.sprintLengthDays,
+    });
     // Render health card
     const healthCard = (0, card_1.renderHealthCard)(config, metrics, config.thresholds);
     // Output results
@@ -30039,6 +30064,18 @@ function outputResults(config, healthCard, metrics) {
             core.setOutput('cycle-time-hours', metrics.cycleTimeMedianHours.toFixed(1));
             core.setOutput('throughput', metrics.throughputCount);
             core.setOutput('review-turnaround-hours', metrics.reviewTurnaroundMedianHours.toFixed(1));
+            if (metrics.prSizeMedian !== null) {
+                core.setOutput('pr-size-median', Math.round(metrics.prSizeMedian));
+            }
+            if (metrics.buildSuccessRate !== null) {
+                core.setOutput('build-success-rate', metrics.buildSuccessRate);
+            }
+            if (metrics.shipFrequency !== null) {
+                core.setOutput('ship-frequency', metrics.shipFrequency.toFixed(2));
+            }
+            if (metrics.leadTimeMedianHours !== null) {
+                core.setOutput('lead-time-hours', metrics.leadTimeMedianHours.toFixed(1));
+            }
         }
     }
 }
@@ -30073,11 +30110,20 @@ async function pushToAurora(config, metrics) {
             cycleTimeP90Hours: metrics.cycleTimeP90Hours,
             throughputCount: metrics.throughputCount,
             wipCount: metrics.wipCount,
+            prSizeMedian: metrics.prSizeMedian,
+            leadTimeMedianHours: metrics.leadTimeMedianHours,
         },
         collaboration: {
             reviewTurnaroundHours: metrics.reviewTurnaroundMedianHours,
             collaboratorCount: metrics.collaboratorCount,
             concentrationRatio: metrics.concentrationRatio,
+        },
+        operations: {
+            buildSuccessRate: metrics.buildSuccessRate,
+            buildTotalRuns: metrics.buildTotalRuns,
+            shipFrequency: metrics.shipFrequency,
+            shipCount: metrics.shipCount,
+            shipSource: metrics.shipSource,
         },
         raw: {
             repoName: `${config.owner}/${config.repo}`,
@@ -30152,6 +30198,16 @@ function renderHealthCard(config, metrics, thresholds) {
     const throughput = `${metrics.throughputCount} PRs`;
     const wip = formatWIP(metrics.wipCount, metrics.collaboratorCount);
     const collaboration = formatCollaboration(metrics.collaboratorCount, metrics.concentrationRatio);
+    // Conditionally rendered rows for new metrics
+    const prSizeRow = metrics.prSizeMedian !== null
+        ? `| PR Size | ${formatPRSize(metrics.prSizeMedian, metrics.prSizeCategory)} |\n` : '';
+    const buildRow = metrics.buildSuccessRate !== null
+        ? `| Build Success | ${formatBuildSuccess(metrics.buildSuccessRate, metrics.buildTotalRuns)} |\n` : '';
+    const shipLabel = metrics.shipSource === 'deployment' ? 'Deploy Frequency' : 'Release Frequency';
+    const shipRow = metrics.shipFrequency !== null
+        ? `| ${shipLabel} | ${formatShipFrequency(metrics.shipFrequency, metrics.shipCount)} |\n` : '';
+    const leadTimeRow = metrics.leadTimeMedianHours !== null
+        ? `| Lead Time | ${formatLeadTime(metrics.leadTimeMedianHours)} |\n` : '';
     // Build the card
     let card = `\
 \`\`\`
@@ -30163,12 +30219,12 @@ ${exports.AURORA_LOGO}
 | Metric | Value |
 |--------|-------|
 | PR Cycle Time | ${cycleTime} |
-| Review Speed | ${reviewSpeed} |
+${prSizeRow}| Review Speed | ${reviewSpeed} |
 | Review Depth | ${reviewDepth} |
 | Throughput | ${throughput} |
 | WIP | ${wip} |
 | Collaboration | ${collaboration} |
-`;
+${buildRow}${shipRow}${leadTimeRow}`;
     // Add quick wins for flagged metrics
     const quickWins = generateQuickWins(metrics, thresholds);
     if (quickWins.length > 0) {
@@ -30235,6 +30291,30 @@ function formatReviewDepth(score) {
     }
     return `${score.toFixed(1)} comments/PR (very thorough)`;
 }
+function formatPRSize(median, category) {
+    const label = category || 'unknown';
+    return `${Math.round(median)} lines (${label})`;
+}
+function formatBuildSuccess(rate, totalRuns) {
+    let label;
+    if (rate >= 90)
+        label = 'healthy';
+    else if (rate >= 75)
+        label = 'degraded';
+    else
+        label = 'failing';
+    return `${rate}% of ${totalRuns} runs (${label})`;
+}
+function formatShipFrequency(freq, count) {
+    if (freq >= 1) {
+        return `${freq.toFixed(1)}/day (${count} total)`;
+    }
+    const days = 1 / freq;
+    return `every ${days.toFixed(0)} days (${count} total)`;
+}
+function formatLeadTime(hours) {
+    return (0, metrics_1.formatDuration)(hours);
+}
 /**
  * Generate contextual quick wins based on flagged metrics
  */
@@ -30288,6 +30368,28 @@ function generateQuickWins(metrics, thresholds) {
     // Solo contributor
     if (metrics.collaboratorCount <= 1 && metrics.throughputCount > 0) {
         tips.push('**Collaboration** — Solo work is fine for focused sprints. When possible, even async review from a teammate adds perspective.');
+    }
+    // PR Size
+    if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeCritical) {
+        tips.push('**PR size** — PRs over 1000 lines are hard to review well. Breaking work into smaller, reviewable chunks improves quality and speed.');
+    }
+    else if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeWarning) {
+        tips.push('**PR size** — Large PRs slow reviews and hide bugs. Consider splitting into focused, incremental changes.');
+    }
+    // Build Success
+    if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical) {
+        tips.push('**Build health** — Build success below 75% means broken builds are the norm. Prioritize fixing flaky tests and build stability.');
+    }
+    else if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning) {
+        tips.push('**Build health** — Build failures above 10% slow everyone down. Investigate the most common failure patterns.');
+    }
+    // Lead Time
+    if (metrics.leadTimeMedianHours !== null && metrics.leadTimeMedianHours >= 168) {
+        tips.push('**Lead time** — A week or more from commit to production suggests deployment friction. Smaller, more frequent releases reduce risk.');
+    }
+    // Ship Frequency
+    if (metrics.shipFrequency !== null && metrics.shipFrequency < 1 / 7) {
+        tips.push('**Ship frequency** — Shipping less than once a week increases batch size and risk. More frequent, smaller releases build confidence.');
     }
     return tips;
 }
@@ -30378,6 +30480,13 @@ function getConfig() {
     const auroraTeamId = isGitHubAction
         ? core.getInput('aurora-team-id')
         : process.env.AURORA_TEAM_ID;
+    // Filters
+    const workflowFilter = isGitHubAction
+        ? core.getInput('workflow-filter')
+        : process.env.INPUT_WORKFLOW_FILTER;
+    const deploymentEnvironment = isGitHubAction
+        ? core.getInput('deployment-environment')
+        : process.env.INPUT_DEPLOYMENT_ENVIRONMENT;
     // Thresholds (configurable with sensible defaults)
     const thresholds = {
         cycleTimeWarningHours: parseFloat(isGitHubAction
@@ -30403,6 +30512,10 @@ function getConfig() {
         concentrationCritical: 0.75,
         reviewDepthWarning: 0.5,
         reviewDepthCritical: 0.2,
+        prSizeWarning: 400,
+        prSizeCritical: 1000,
+        buildSuccessWarning: 90,
+        buildSuccessCritical: 75,
     };
     return {
         token,
@@ -30415,6 +30528,8 @@ function getConfig() {
         issueNumber,
         auroraApiKey: auroraApiKey || undefined,
         auroraTeamId: auroraTeamId || undefined,
+        workflowFilter: workflowFilter || undefined,
+        deploymentEnvironment: deploymentEnvironment || undefined,
         thresholds,
     };
 }
@@ -30582,20 +30697,28 @@ class GitHubClient {
         return pullRequests;
     }
     /**
-     * Get reviews for multiple PRs - parallelized with concurrency limit
+     * Get reviews AND PR size for multiple PRs in a single pass.
+     * Piggybacks pulls.get (for additions/deletions) onto the existing
+     * review+comment fetch so we don't need a separate per-PR round trip.
      */
-    async getReviewsForPRs(prNumbers) {
+    async getReviewsAndSizes(prNumbers) {
         const reviewsByPR = new Map();
-        const fetchReviewsForPR = async (prNumber) => {
+        const sizesByPR = new Map();
+        const fetchForPR = async (prNumber) => {
             try {
-                // Fetch reviews and comments in parallel
-                const [reviewsResponse, commentsResponse] = await Promise.all([
+                // Fetch reviews, comments, AND PR details in parallel
+                const [reviewsResponse, commentsResponse, prResponse] = await Promise.all([
                     this.octokit.rest.pulls.listReviews({
                         owner: this.owner,
                         repo: this.repo,
                         pull_number: prNumber,
                     }),
                     this.octokit.rest.pulls.listReviewComments({
+                        owner: this.owner,
+                        repo: this.repo,
+                        pull_number: prNumber,
+                    }),
+                    this.octokit.rest.pulls.get({
                         owner: this.owner,
                         repo: this.repo,
                         pull_number: prNumber,
@@ -30617,17 +30740,29 @@ class GitHubClient {
                     const perReview = inlineCommentCount / nonAuthorReviews.length;
                     nonAuthorReviews.forEach((r) => (r.commentCount += perReview));
                 }
-                return { prNumber, reviews };
+                return {
+                    prNumber,
+                    reviews,
+                    additions: prResponse.data.additions,
+                    deletions: prResponse.data.deletions,
+                };
             }
             catch {
-                return { prNumber, reviews: [] };
+                return { prNumber, reviews: [], additions: 0, deletions: 0 };
             }
         };
-        // Fetch all reviews in parallel with concurrency limit
-        const results = await runWithConcurrency(prNumbers, fetchReviewsForPR, CONCURRENCY_LIMIT);
-        for (const { prNumber, reviews } of results) {
+        const results = await runWithConcurrency(prNumbers, fetchForPR, CONCURRENCY_LIMIT);
+        for (const { prNumber, reviews, additions, deletions } of results) {
             reviewsByPR.set(prNumber, reviews);
+            sizesByPR.set(prNumber, { additions, deletions });
         }
+        return { reviewsByPR, sizesByPR };
+    }
+    /**
+     * Get reviews for multiple PRs - parallelized with concurrency limit
+     */
+    async getReviewsForPRs(prNumbers) {
+        const { reviewsByPR } = await this.getReviewsAndSizes(prNumbers);
         return reviewsByPR;
     }
     /**
@@ -30665,6 +30800,190 @@ class GitHubClient {
             issue_number: issueNumber,
             body,
         });
+    }
+    /**
+     * Get PR size details (additions + deletions) for multiple PRs
+     */
+    async getPRDetails(prNumbers) {
+        const result = new Map();
+        const fetchPR = async (prNumber) => {
+            try {
+                const response = await this.octokit.rest.pulls.get({
+                    owner: this.owner,
+                    repo: this.repo,
+                    pull_number: prNumber,
+                });
+                return {
+                    prNumber,
+                    additions: response.data.additions,
+                    deletions: response.data.deletions,
+                };
+            }
+            catch {
+                return { prNumber, additions: 0, deletions: 0 };
+            }
+        };
+        const results = await runWithConcurrency(prNumbers, fetchPR, CONCURRENCY_LIMIT);
+        for (const { prNumber, additions, deletions } of results) {
+            result.set(prNumber, { additions, deletions });
+        }
+        return result;
+    }
+    /**
+     * Get workflow run summary for a date range.
+     * Caps at 5 pages (500 runs) to avoid slow pagination on active repos.
+     */
+    async getWorkflowRuns(startDate, endDate, workflowFilter) {
+        try {
+            const created = `${startDate.toISOString().split('T')[0]}..${endDate.toISOString().split('T')[0]}`;
+            const params = {
+                owner: this.owner,
+                repo: this.repo,
+                status: 'completed',
+                created,
+                per_page: 100,
+            };
+            const endpoint = workflowFilter
+                ? this.octokit.rest.actions.listWorkflowRuns
+                : this.octokit.rest.actions.listWorkflowRunsForRepo;
+            const requestParams = workflowFilter
+                ? { ...params, workflow_id: workflowFilter }
+                : params;
+            const items = [];
+            const MAX_PAGES = 5;
+            let page = 0;
+            const iterator = this.octokit.paginate.iterator(endpoint, requestParams);
+            for await (const response of iterator) {
+                items.push(...response.data);
+                page++;
+                if (page >= MAX_PAGES)
+                    break;
+            }
+            // Exclude cancelled and skipped runs
+            const relevant = items.filter((r) => r.conclusion !== 'cancelled' && r.conclusion !== 'skipped');
+            if (relevant.length === 0)
+                return null;
+            const successCount = relevant.filter((r) => r.conclusion === 'success').length;
+            const failureCount = relevant.length - successCount;
+            return {
+                totalRuns: relevant.length,
+                successCount,
+                failureCount,
+            };
+        }
+        catch {
+            return null;
+        }
+    }
+    /**
+     * Get deployments within a date range.
+     * Uses iterator with early termination — stops once we pass startDate.
+     */
+    async getDeployments(startDate, endDate, environment) {
+        try {
+            const params = {
+                owner: this.owner,
+                repo: this.repo,
+                per_page: 100,
+                ...(environment ? { environment } : {}),
+            };
+            const results = [];
+            const iterator = this.octokit.paginate.iterator(this.octokit.rest.repos.listDeployments, params);
+            outer: for await (const response of iterator) {
+                for (const d of response.data) {
+                    const created = new Date(d.created_at);
+                    // Deployments are newest-first; stop when we're past the window
+                    if (created < startDate)
+                        break outer;
+                    if (created <= endDate) {
+                        results.push({
+                            id: d.id,
+                            sha: d.sha,
+                            createdAt: created,
+                            source: 'deployment',
+                            label: d.environment || 'unknown',
+                        });
+                    }
+                }
+            }
+            return results;
+        }
+        catch {
+            return [];
+        }
+    }
+    /**
+     * Get releases within a date range (excludes drafts).
+     * Uses iterator with early termination — stops once we pass startDate.
+     */
+    async getReleases(startDate, endDate) {
+        try {
+            const results = [];
+            const iterator = this.octokit.paginate.iterator(this.octokit.rest.repos.listReleases, {
+                owner: this.owner,
+                repo: this.repo,
+                per_page: 100,
+            });
+            outer: for await (const response of iterator) {
+                for (const r of response.data) {
+                    if (r.draft)
+                        continue;
+                    const published = r.published_at ? new Date(r.published_at) : null;
+                    if (!published)
+                        continue;
+                    // Releases are newest-first; stop when we're past the window
+                    if (published < startDate)
+                        break outer;
+                    if (published <= endDate) {
+                        results.push({
+                            id: r.id,
+                            sha: r.target_commitish || '',
+                            createdAt: published,
+                            source: 'release',
+                            label: r.tag_name || 'unknown',
+                        });
+                    }
+                }
+            }
+            return results;
+        }
+        catch {
+            return [];
+        }
+    }
+    /**
+     * Get the date of the first commit for each PR
+     */
+    async getFirstCommitDates(prNumbers) {
+        const result = new Map();
+        const fetchFirstCommit = async (prNumber) => {
+            try {
+                const response = await this.octokit.rest.pulls.listCommits({
+                    owner: this.owner,
+                    repo: this.repo,
+                    pull_number: prNumber,
+                    per_page: 1,
+                });
+                const firstCommit = response.data[0];
+                if (firstCommit) {
+                    const date = firstCommit.commit.author?.date || firstCommit.commit.committer?.date;
+                    if (date) {
+                        return { prNumber, date: new Date(date) };
+                    }
+                }
+                return { prNumber, date: null };
+            }
+            catch {
+                return { prNumber, date: null };
+            }
+        };
+        const results = await runWithConcurrency(prNumbers, fetchFirstCommit, CONCURRENCY_LIMIT);
+        for (const { prNumber, date } of results) {
+            if (date) {
+                result.set(prNumber, date);
+            }
+        }
+        return result;
     }
 }
 exports.GitHubClient = GitHubClient;
@@ -30868,6 +31187,44 @@ function detectInsights(metrics, thresholds) {
             message: 'Review comments are light — consider deeper code discussions',
         });
     }
+    // Large PRs detection
+    if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeCritical) {
+        insights.push({
+            type: 'large-prs',
+            severity: 'warning',
+            message: `Median PR size at ${Math.round(metrics.prSizeMedian)} lines — PRs this large are hard to review effectively`,
+        });
+    }
+    else if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeWarning) {
+        insights.push({
+            type: 'large-prs',
+            severity: 'info',
+            message: `Median PR size at ${Math.round(metrics.prSizeMedian)} lines — consider smaller, focused changes`,
+        });
+    }
+    // Build failures detection
+    if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical) {
+        insights.push({
+            type: 'build-failures',
+            severity: 'critical',
+            message: `Build success rate at ${metrics.buildSuccessRate}% — broken builds are blocking delivery`,
+        });
+    }
+    else if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning) {
+        insights.push({
+            type: 'build-failures',
+            severity: 'warning',
+            message: `Build success rate at ${metrics.buildSuccessRate}% — build reliability is degrading`,
+        });
+    }
+    // Slow lead time detection
+    if (metrics.leadTimeMedianHours !== null && metrics.leadTimeMedianHours >= 168) {
+        insights.push({
+            type: 'slow-lead-time',
+            severity: 'warning',
+            message: `Lead time at ${Math.round(metrics.leadTimeMedianHours / 24)} days — significant deployment lag`,
+        });
+    }
     // Sort by severity (critical first)
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     insights.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
@@ -30883,12 +31240,14 @@ function getHealthEmoji(metrics, thresholds) {
         ? metrics.wipCount / metrics.collaboratorCount
         : 0;
     if (metrics.cycleTimeMedianHours >= thresholds.cycleTimeCriticalHours ||
-        wipRatio >= thresholds.wipCriticalRatio) {
+        wipRatio >= thresholds.wipCriticalRatio ||
+        (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical)) {
         return '🔴';
     }
     if (metrics.cycleTimeMedianHours >= thresholds.cycleTimeWarningHours ||
         wipRatio >= thresholds.wipWarningRatio ||
-        metrics.concentrationRatio >= thresholds.concentrationWarning) {
+        metrics.concentrationRatio >= thresholds.concentrationWarning ||
+        (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning)) {
         return '🟡';
     }
     return '🟢';
@@ -30910,7 +31269,7 @@ function getHealthEmoji(metrics, thresholds) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.calculateMetrics = calculateMetrics;
 exports.formatDuration = formatDuration;
-function calculateMetrics(pullRequests, reviewsByPR, openPRCount) {
+function calculateMetrics(pullRequests, reviewsByPR, openPRCount, options) {
     // Cycle times (PR created → merged)
     const cycleTimes = pullRequests.map((pr) => {
         const hours = (pr.mergedAt.getTime() - pr.createdAt.getTime()) / (1000 * 60 * 60);
@@ -30950,11 +31309,77 @@ function calculateMetrics(pullRequests, reviewsByPR, openPRCount) {
         }
     }
     const reviewDepthScore = prsWithReviews > 0 ? totalComments / prsWithReviews : 0;
+    // --- New metrics (from options) ---
+    let prSizeMedian = null;
+    let prSizeCategory = null;
+    let buildSuccessRate = null;
+    let buildTotalRuns = null;
+    let shipFrequency = null;
+    let shipCount = null;
+    let shipSource = null;
+    let leadTimeMedianHours = null;
+    if (options) {
+        // PR Size
+        if (options.prSizes && options.prSizes.size > 0) {
+            const sizes = [...options.prSizes.values()].map((s) => s.additions + s.deletions);
+            prSizeMedian = median(sizes);
+            if (prSizeMedian !== null) {
+                if (prSizeMedian < 100)
+                    prSizeCategory = 'small';
+                else if (prSizeMedian < 400)
+                    prSizeCategory = 'medium';
+                else
+                    prSizeCategory = 'large';
+            }
+        }
+        // Build Success
+        if (options.workflowRuns && options.workflowRuns.totalRuns > 0) {
+            buildTotalRuns = options.workflowRuns.totalRuns;
+            buildSuccessRate = Math.round((options.workflowRuns.successCount / options.workflowRuns.totalRuns) * 100);
+        }
+        // Ship Frequency
+        if (options.shipEvents && options.shipEvents.length > 0) {
+            shipCount = options.shipEvents.length;
+            shipSource = options.shipEvents[0].source;
+            const days = options.periodDays || 14;
+            shipFrequency = shipCount / days;
+        }
+        // Lead Time: first commit → ship event
+        if (options.shipEvents && options.shipEvents.length > 0 &&
+            options.firstCommitDates && options.firstCommitDates.size > 0) {
+            const sortedShipEvents = [...options.shipEvents].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+            const leadTimes = [];
+            for (const pr of pullRequests) {
+                const firstCommitDate = options.firstCommitDates.get(pr.number);
+                if (!firstCommitDate)
+                    continue;
+                // Find the earliest ship event after merge
+                const shipEvent = sortedShipEvents.find((e) => e.createdAt.getTime() >= pr.mergedAt.getTime());
+                if (!shipEvent)
+                    continue;
+                const hours = (shipEvent.createdAt.getTime() - firstCommitDate.getTime()) / (1000 * 60 * 60);
+                if (hours >= 0) {
+                    leadTimes.push(hours);
+                }
+            }
+            if (leadTimes.length > 0) {
+                leadTimeMedianHours = median(leadTimes);
+            }
+        }
+    }
     return {
         cycleTimeMedianHours: median(cycleTimes) || 0,
         cycleTimeP90Hours: percentile(cycleTimes, 90) || 0,
         throughputCount: pullRequests.length,
         wipCount: openPRCount,
+        prSizeMedian,
+        prSizeCategory,
+        buildSuccessRate,
+        buildTotalRuns,
+        shipFrequency,
+        shipCount,
+        shipSource,
+        leadTimeMedianHours,
         reviewTurnaroundMedianHours: median(reviewTurnarounds) || 0,
         collaboratorCount: contributorPRCounts.size,
         concentrationRatio,

@@ -45,8 +45,14 @@ require.cache[require.resolve('@actions/github')] = {
 // Mock GitHubClient
 const mockGetMergedPRs = mock.fn(async () => [] as any[]);
 const mockGetReviewsForPRs = mock.fn(async () => new Map());
+const mockGetReviewsAndSizes = mock.fn(async () => ({ reviewsByPR: new Map(), sizesByPR: new Map() }));
 const mockGetOpenPRs = mock.fn(async () => 0);
 const mockPostIssueComment = mock.fn(async () => undefined);
+const mockGetPRDetails = mock.fn(async () => new Map());
+const mockGetWorkflowRuns = mock.fn(async () => null);
+const mockGetDeployments = mock.fn(async () => []);
+const mockGetReleases = mock.fn(async () => []);
+const mockGetFirstCommitDates = mock.fn(async () => new Map());
 
 // Resolve the .ts path for our own module (tsx handles .ts resolution)
 const ghClientPath = require.resolve('../github-client');
@@ -61,8 +67,14 @@ require.cache[ghClientPath] = {
 		GitHubClient: class MockGitHubClient {
 			getMergedPRs = mockGetMergedPRs;
 			getReviewsForPRs = mockGetReviewsForPRs;
+			getReviewsAndSizes = mockGetReviewsAndSizes;
 			getOpenPRs = mockGetOpenPRs;
 			postIssueComment = mockPostIssueComment;
+			getPRDetails = mockGetPRDetails;
+			getWorkflowRuns = mockGetWorkflowRuns;
+			getDeployments = mockGetDeployments;
+			getReleases = mockGetReleases;
+			getFirstCommitDates = mockGetFirstCommitDates;
 		},
 	},
 } as any;
@@ -94,12 +106,14 @@ const ALL_ENV_KEYS = [
 	'GITHUB_ACTIONS', 'GITHUB_TOKEN', 'GITHUB_REPOSITORY',
 	'INPUT_SPRINT_LENGTH_DAYS', 'INPUT_POST_AS', 'INPUT_ISSUE_NUMBER',
 	'AURORA_API_KEY', 'AURORA_TEAM_ID',
+	'INPUT_WORKFLOW_FILTER', 'INPUT_DEPLOYMENT_ENVIRONMENT',
 	'INPUT_CYCLE_TIME_WARNING_HOURS', 'INPUT_CYCLE_TIME_CRITICAL_HOURS',
 	'INPUT_REVIEW_WARNING_HOURS', 'INPUT_REVIEW_CRITICAL_HOURS',
 	'INPUT_WIP_WARNING_RATIO', 'INPUT_WIP_CRITICAL_RATIO',
 	'INPUT_GITHUB-TOKEN', 'INPUT_SPRINT-LENGTH-DAYS',
 	'INPUT_POST-AS', 'INPUT_ISSUE-NUMBER',
 	'INPUT_AURORA-API-KEY', 'INPUT_AURORA-TEAM-ID',
+	'INPUT_WORKFLOW-FILTER', 'INPUT_DEPLOYMENT-ENVIRONMENT',
 	'INPUT_CYCLE-TIME-WARNING-HOURS', 'INPUT_CYCLE-TIME-CRITICAL-HOURS',
 	'INPUT_REVIEW-WARNING-HOURS', 'INPUT_REVIEW-CRITICAL-HOURS',
 	'INPUT_WIP-WARNING-RATIO', 'INPUT_WIP-CRITICAL-RATIO',
@@ -118,8 +132,14 @@ function makePRData(count: number) {
 function resetMocks() {
 	mockGetMergedPRs.mock.resetCalls();
 	mockGetReviewsForPRs.mock.resetCalls();
+	mockGetReviewsAndSizes.mock.resetCalls();
 	mockGetOpenPRs.mock.resetCalls();
 	mockPostIssueComment.mock.resetCalls();
+	mockGetPRDetails.mock.resetCalls();
+	mockGetWorkflowRuns.mock.resetCalls();
+	mockGetDeployments.mock.resetCalls();
+	mockGetReleases.mock.resetCalls();
+	mockGetFirstCommitDates.mock.resetCalls();
 	mockSetOutput.mock.resetCalls();
 	mockAddRaw.mock.resetCalls();
 	mockWrite.mock.resetCalls();
@@ -127,8 +147,14 @@ function resetMocks() {
 
 	mockGetMergedPRs.mock.mockImplementation(async () => []);
 	mockGetReviewsForPRs.mock.mockImplementation(async () => new Map());
+	mockGetReviewsAndSizes.mock.mockImplementation(async () => ({ reviewsByPR: new Map(), sizesByPR: new Map() }));
 	mockGetOpenPRs.mock.mockImplementation(async () => 0);
 	mockPostIssueComment.mock.mockImplementation(async () => undefined);
+	mockGetPRDetails.mock.mockImplementation(async () => new Map());
+	mockGetWorkflowRuns.mock.mockImplementation(async () => null);
+	mockGetDeployments.mock.mockImplementation(async () => []);
+	mockGetReleases.mock.mockImplementation(async () => []);
+	mockGetFirstCommitDates.mock.mockImplementation(async () => new Map());
 	mockFetch.mock.mockImplementation(async () => ({ ok: true, text: async () => '' }));
 }
 
@@ -150,7 +176,7 @@ describe('run — empty sprint', () => {
 
 	it('does not fetch reviews or open PRs when no merged PRs', async () => {
 		await run();
-		assert.strictEqual(mockGetReviewsForPRs.mock.callCount(), 0);
+		assert.strictEqual(mockGetReviewsAndSizes.mock.callCount(), 0);
 		assert.strictEqual(mockGetOpenPRs.mock.callCount(), 0);
 	});
 
@@ -186,18 +212,21 @@ describe('run — sprint with merged PRs', () => {
 		setEnv({ GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: 'owner/repo' });
 		resetMocks();
 		mockGetMergedPRs.mock.mockImplementation(async () => makePRData(3));
-		mockGetReviewsForPRs.mock.mockImplementation(async () => new Map([
-			[1, [{ prNumber: 1, submittedAt: new Date('2025-01-01T06:00:00Z'), author: 'reviewer', state: 'APPROVED', commentCount: 1 }]],
-			[2, []],
-			[3, []],
-		]));
+		mockGetReviewsAndSizes.mock.mockImplementation(async () => ({
+			reviewsByPR: new Map([
+				[1, [{ prNumber: 1, submittedAt: new Date('2025-01-01T06:00:00Z'), author: 'reviewer', state: 'APPROVED', commentCount: 1 }]],
+				[2, []],
+				[3, []],
+			]),
+			sizesByPR: new Map(),
+		}));
 		mockGetOpenPRs.mock.mockImplementation(async () => 2);
 	});
 	afterEach(() => clearEnv(ALL_ENV_KEYS));
 
 	it('fetches reviews and open PRs', async () => {
 		await run();
-		assert.strictEqual(mockGetReviewsForPRs.mock.callCount(), 1);
+		assert.strictEqual(mockGetReviewsAndSizes.mock.callCount(), 1);
 		assert.strictEqual(mockGetOpenPRs.mock.callCount(), 1);
 	});
 
@@ -446,4 +475,98 @@ describe('run — full configuration matrix', () => {
 			await run();
 		});
 	}
+});
+
+// ---------------------------------------------------------------------------
+// New metrics data fetching
+// ---------------------------------------------------------------------------
+
+describe('run — new metrics data fetching', () => {
+	beforeEach(() => {
+		clearEnv(ALL_ENV_KEYS);
+		setEnv({ GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: 'owner/repo' });
+		resetMocks();
+		mockGetMergedPRs.mock.mockImplementation(async () => makePRData(2));
+		mockGetOpenPRs.mock.mockImplementation(async () => 1);
+	});
+	afterEach(() => clearEnv(ALL_ENV_KEYS));
+
+	it('fetches reviews+sizes, workflow runs, and deployments in parallel', async () => {
+		await run();
+		assert.strictEqual(mockGetReviewsAndSizes.mock.callCount(), 1);
+		assert.strictEqual(mockGetWorkflowRuns.mock.callCount(), 1);
+		assert.strictEqual(mockGetDeployments.mock.callCount(), 1);
+	});
+
+	it('falls back to releases when no deployments exist', async () => {
+		mockGetDeployments.mock.mockImplementation(async () => []);
+		await run();
+		assert.strictEqual(mockGetReleases.mock.callCount(), 1);
+	});
+
+	it('does not fetch releases when deployments exist', async () => {
+		mockGetDeployments.mock.mockImplementation(async () => [
+			{ id: 1, sha: 'abc', createdAt: new Date(), source: 'deployment', label: 'production' },
+		]);
+		await run();
+		assert.strictEqual(mockGetReleases.mock.callCount(), 0);
+	});
+
+	it('fetches first commit dates only when ship events exist', async () => {
+		mockGetDeployments.mock.mockImplementation(async () => []);
+		mockGetReleases.mock.mockImplementation(async () => []);
+		await run();
+		assert.strictEqual(mockGetFirstCommitDates.mock.callCount(), 0);
+	});
+
+	it('fetches first commit dates when deployments exist', async () => {
+		mockGetDeployments.mock.mockImplementation(async () => [
+			{ id: 1, sha: 'abc', createdAt: new Date(), source: 'deployment', label: 'production' },
+		]);
+		await run();
+		assert.strictEqual(mockGetFirstCommitDates.mock.callCount(), 1);
+	});
+
+	it('sets new metric outputs when data is available', async () => {
+		setEnv({ GITHUB_ACTIONS: 'true' });
+		mockGetReviewsAndSizes.mock.mockImplementation(async () => ({
+			reviewsByPR: new Map(),
+			sizesByPR: new Map([
+				[1, { additions: 100, deletions: 50 }],
+				[2, { additions: 200, deletions: 100 }],
+			]),
+		}));
+		mockGetWorkflowRuns.mock.mockImplementation(async () => ({
+			totalRuns: 10, successCount: 9, failureCount: 1,
+		}));
+
+		await run();
+
+		const outputNames = mockSetOutput.mock.calls.map((c: any) => c.arguments[0]);
+		assert.ok(outputNames.includes('pr-size-median'));
+		assert.ok(outputNames.includes('build-success-rate'));
+	});
+
+	it('does not set new metric outputs when data is null', async () => {
+		setEnv({ GITHUB_ACTIONS: 'true' });
+		await run();
+		const outputNames = mockSetOutput.mock.calls.map((c: any) => c.arguments[0]);
+		assert.ok(!outputNames.includes('ship-frequency'));
+		assert.ok(!outputNames.includes('lead-time-hours'));
+	});
+
+	it('includes operations section in Aurora payload', async () => {
+		setEnv({ AURORA_API_KEY: 'ak-123', AURORA_TEAM_ID: 'team-456' });
+		mockGetReviewsAndSizes.mock.mockImplementation(async () => ({
+			reviewsByPR: new Map(), sizesByPR: new Map(),
+		}));
+		mockGetWorkflowRuns.mock.mockImplementation(async () => ({
+			totalRuns: 20, successCount: 18, failureCount: 2,
+		}));
+		await run();
+		const body = JSON.parse((mockFetch.mock.calls[0] as any).arguments[1].body);
+		assert.ok(body.operations);
+		assert.strictEqual(body.operations.buildSuccessRate, 90);
+		assert.strictEqual(body.operations.buildTotalRuns, 20);
+	});
 });

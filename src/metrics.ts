@@ -4,7 +4,7 @@
  * Computes sprint health metrics from PR and review data.
  */
 
-import { PullRequest, Review } from './github-client';
+import { PullRequest, Review, WorkflowRunSummary, ShipEvent } from './github-client';
 
 export interface SprintMetrics {
 	// Delivery
@@ -12,6 +12,22 @@ export interface SprintMetrics {
 	cycleTimeP90Hours: number;
 	throughputCount: number;
 	wipCount: number;
+
+	// PR Size
+	prSizeMedian: number | null;
+	prSizeCategory: 'small' | 'medium' | 'large' | null;
+
+	// Build
+	buildSuccessRate: number | null;
+	buildTotalRuns: number | null;
+
+	// Ship
+	shipFrequency: number | null;
+	shipCount: number | null;
+	shipSource: 'deployment' | 'release' | null;
+
+	// Lead Time
+	leadTimeMedianHours: number | null;
 
 	// Collaboration
 	reviewTurnaroundMedianHours: number;
@@ -24,10 +40,19 @@ export interface SprintMetrics {
 	prNumbers: number[];
 }
 
+export interface MetricsOptions {
+	prSizes?: Map<number, { additions: number; deletions: number }>;
+	workflowRuns?: WorkflowRunSummary | null;
+	shipEvents?: ShipEvent[];
+	firstCommitDates?: Map<number, Date>;
+	periodDays?: number;
+}
+
 export function calculateMetrics(
 	pullRequests: PullRequest[],
 	reviewsByPR: Map<number, Review[]>,
-	openPRCount: number
+	openPRCount: number,
+	options?: MetricsOptions
 ): SprintMetrics {
 	// Cycle times (PR created → merged)
 	const cycleTimes = pullRequests.map((pr) => {
@@ -74,11 +99,90 @@ export function calculateMetrics(
 	}
 	const reviewDepthScore = prsWithReviews > 0 ? totalComments / prsWithReviews : 0;
 
+	// --- New metrics (from options) ---
+	let prSizeMedian: number | null = null;
+	let prSizeCategory: 'small' | 'medium' | 'large' | null = null;
+	let buildSuccessRate: number | null = null;
+	let buildTotalRuns: number | null = null;
+	let shipFrequency: number | null = null;
+	let shipCount: number | null = null;
+	let shipSource: 'deployment' | 'release' | null = null;
+	let leadTimeMedianHours: number | null = null;
+
+	if (options) {
+		// PR Size
+		if (options.prSizes && options.prSizes.size > 0) {
+			const sizes = [...options.prSizes.values()].map((s) => s.additions + s.deletions);
+			prSizeMedian = median(sizes);
+			if (prSizeMedian !== null) {
+				if (prSizeMedian < 100) prSizeCategory = 'small';
+				else if (prSizeMedian < 400) prSizeCategory = 'medium';
+				else prSizeCategory = 'large';
+			}
+		}
+
+		// Build Success
+		if (options.workflowRuns && options.workflowRuns.totalRuns > 0) {
+			buildTotalRuns = options.workflowRuns.totalRuns;
+			buildSuccessRate = Math.round(
+				(options.workflowRuns.successCount / options.workflowRuns.totalRuns) * 100
+			);
+		}
+
+		// Ship Frequency
+		if (options.shipEvents && options.shipEvents.length > 0) {
+			shipCount = options.shipEvents.length;
+			shipSource = options.shipEvents[0].source;
+			const days = options.periodDays || 14;
+			shipFrequency = shipCount / days;
+		}
+
+		// Lead Time: first commit → ship event
+		if (
+			options.shipEvents && options.shipEvents.length > 0 &&
+			options.firstCommitDates && options.firstCommitDates.size > 0
+		) {
+			const sortedShipEvents = [...options.shipEvents].sort(
+				(a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+			);
+			const leadTimes: number[] = [];
+
+			for (const pr of pullRequests) {
+				const firstCommitDate = options.firstCommitDates.get(pr.number);
+				if (!firstCommitDate) continue;
+
+				// Find the earliest ship event after merge
+				const shipEvent = sortedShipEvents.find(
+					(e) => e.createdAt.getTime() >= pr.mergedAt.getTime()
+				);
+				if (!shipEvent) continue;
+
+				const hours = (shipEvent.createdAt.getTime() - firstCommitDate.getTime()) / (1000 * 60 * 60);
+				if (hours >= 0) {
+					leadTimes.push(hours);
+				}
+			}
+
+			if (leadTimes.length > 0) {
+				leadTimeMedianHours = median(leadTimes);
+			}
+		}
+	}
+
 	return {
 		cycleTimeMedianHours: median(cycleTimes) || 0,
 		cycleTimeP90Hours: percentile(cycleTimes, 90) || 0,
 		throughputCount: pullRequests.length,
 		wipCount: openPRCount,
+
+		prSizeMedian,
+		prSizeCategory,
+		buildSuccessRate,
+		buildTotalRuns,
+		shipFrequency,
+		shipCount,
+		shipSource,
+		leadTimeMedianHours,
 
 		reviewTurnaroundMedianHours: median(reviewTurnarounds) || 0,
 		collaboratorCount: contributorPRCounts.size,

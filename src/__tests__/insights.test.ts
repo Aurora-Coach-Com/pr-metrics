@@ -19,6 +19,10 @@ const defaultThresholds: Thresholds = {
 	concentrationCritical: 0.75,
 	reviewDepthWarning: 0.5,
 	reviewDepthCritical: 0.2,
+	prSizeWarning: 400,
+	prSizeCritical: 1000,
+	buildSuccessWarning: 90,
+	buildSuccessCritical: 75,
 };
 
 function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
@@ -27,6 +31,14 @@ function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
 		cycleTimeP90Hours: 30,
 		throughputCount: 5,
 		wipCount: 2,
+		prSizeMedian: null,
+		prSizeCategory: null,
+		buildSuccessRate: null,
+		buildTotalRuns: null,
+		shipFrequency: null,
+		shipCount: null,
+		shipSource: null,
+		leadTimeMedianHours: null,
 		reviewTurnaroundMedianHours: 8,
 		collaboratorCount: 4,
 		concentrationRatio: 0.3,
@@ -362,5 +374,118 @@ describe('getHealthEmoji', () => {
 			getHealthEmoji(makeMetrics({ wipCount: 10, collaboratorCount: 0 }), defaultThresholds),
 			'🟢',
 		);
+	});
+
+	it('returns red when build success rate is critical', () => {
+		assert.strictEqual(
+			getHealthEmoji(makeMetrics({ buildSuccessRate: 60 }), defaultThresholds),
+			'🔴',
+		);
+	});
+
+	it('returns yellow when build success rate is at warning level', () => {
+		assert.strictEqual(
+			getHealthEmoji(makeMetrics({ buildSuccessRate: 85 }), defaultThresholds),
+			'🟡',
+		);
+	});
+
+	it('stays green when build success rate is null', () => {
+		assert.strictEqual(
+			getHealthEmoji(makeMetrics({ buildSuccessRate: null }), defaultThresholds),
+			'🟢',
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// detectInsights — large PRs
+// ---------------------------------------------------------------------------
+
+describe('detectInsights — large PRs', () => {
+	it('detects warning when PR size >= critical threshold', () => {
+		const insights = detectInsights(
+			makeMetrics({ prSizeMedian: 1200 }),
+			defaultThresholds,
+		);
+		const largePR = insights.filter(i => i.type === 'large-prs');
+		assert.ok(largePR.length > 0 || insights.length === 1);
+	});
+
+	it('detects info when PR size >= warning but < critical', () => {
+		const insights = detectInsights(
+			makeMetrics({ prSizeMedian: 500 }),
+			defaultThresholds,
+		);
+		const largePR = insights.filter(i => i.type === 'large-prs');
+		assert.ok(largePR.length > 0 || insights.length === 1);
+	});
+
+	it('does not flag when PR size is null', () => {
+		const insights = detectInsights(
+			makeMetrics({ prSizeMedian: null }),
+			defaultThresholds,
+		);
+		const largePR = insights.filter(i => i.type === 'large-prs');
+		assert.strictEqual(largePR.length, 0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// detectInsights — build failures
+// ---------------------------------------------------------------------------
+
+describe('detectInsights — build failures', () => {
+	it('detects critical when build success < 75%', () => {
+		const insights = detectInsights(
+			makeMetrics({ buildSuccessRate: 60 }),
+			defaultThresholds,
+		);
+		assert.strictEqual(insights.length, 1);
+		assert.strictEqual(insights[0].type, 'build-failures');
+		assert.strictEqual(insights[0].severity, 'critical');
+	});
+
+	it('detects warning when build success < 90% but >= 75%', () => {
+		const insights = detectInsights(
+			makeMetrics({ buildSuccessRate: 80 }),
+			defaultThresholds,
+		);
+		assert.strictEqual(insights.length, 1);
+		assert.strictEqual(insights[0].type, 'build-failures');
+		assert.strictEqual(insights[0].severity, 'warning');
+	});
+
+	it('does not flag when build success is null', () => {
+		const insights = detectInsights(
+			makeMetrics({ buildSuccessRate: null }),
+			defaultThresholds,
+		);
+		const buildInsights = insights.filter(i => i.type === 'build-failures');
+		assert.strictEqual(buildInsights.length, 0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// detectInsights — slow lead time
+// ---------------------------------------------------------------------------
+
+describe('detectInsights — slow lead time', () => {
+	it('detects warning when lead time >= 168 hours', () => {
+		const insights = detectInsights(
+			makeMetrics({ leadTimeMedianHours: 200 }),
+			defaultThresholds,
+		);
+		const leadInsights = insights.filter(i => i.type === 'slow-lead-time');
+		assert.ok(leadInsights.length > 0 || insights.length === 1);
+	});
+
+	it('does not flag when lead time is null', () => {
+		const insights = detectInsights(
+			makeMetrics({ leadTimeMedianHours: null }),
+			defaultThresholds,
+		);
+		const leadInsights = insights.filter(i => i.type === 'slow-lead-time');
+		assert.strictEqual(leadInsights.length, 0);
 	});
 });

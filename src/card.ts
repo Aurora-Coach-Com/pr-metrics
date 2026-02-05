@@ -39,6 +39,17 @@ export function renderHealthCard(
 	const wip = formatWIP(metrics.wipCount, metrics.collaboratorCount);
 	const collaboration = formatCollaboration(metrics.collaboratorCount, metrics.concentrationRatio);
 
+	// Conditionally rendered rows for new metrics
+	const prSizeRow = metrics.prSizeMedian !== null
+		? `| PR Size | ${formatPRSize(metrics.prSizeMedian, metrics.prSizeCategory)} |\n` : '';
+	const buildRow = metrics.buildSuccessRate !== null
+		? `| Build Success | ${formatBuildSuccess(metrics.buildSuccessRate, metrics.buildTotalRuns!)} |\n` : '';
+	const shipLabel = metrics.shipSource === 'deployment' ? 'Deploy Frequency' : 'Release Frequency';
+	const shipRow = metrics.shipFrequency !== null
+		? `| ${shipLabel} | ${formatShipFrequency(metrics.shipFrequency, metrics.shipCount!)} |\n` : '';
+	const leadTimeRow = metrics.leadTimeMedianHours !== null
+		? `| Lead Time | ${formatLeadTime(metrics.leadTimeMedianHours)} |\n` : '';
+
 	// Build the card
 	let card = `\
 \`\`\`
@@ -50,12 +61,12 @@ ${AURORA_LOGO}
 | Metric | Value |
 |--------|-------|
 | PR Cycle Time | ${cycleTime} |
-| Review Speed | ${reviewSpeed} |
+${prSizeRow}| Review Speed | ${reviewSpeed} |
 | Review Depth | ${reviewDepth} |
 | Throughput | ${throughput} |
 | WIP | ${wip} |
 | Collaboration | ${collaboration} |
-`;
+${buildRow}${shipRow}${leadTimeRow}`;
 
 	// Add quick wins for flagged metrics
 	const quickWins = generateQuickWins(metrics, thresholds);
@@ -131,6 +142,31 @@ function formatReviewDepth(score: number): string {
 	return `${score.toFixed(1)} comments/PR (very thorough)`;
 }
 
+function formatPRSize(median: number, category: 'small' | 'medium' | 'large' | null): string {
+	const label = category || 'unknown';
+	return `${Math.round(median)} lines (${label})`;
+}
+
+function formatBuildSuccess(rate: number, totalRuns: number): string {
+	let label: string;
+	if (rate >= 90) label = 'healthy';
+	else if (rate >= 75) label = 'degraded';
+	else label = 'failing';
+	return `${rate}% of ${totalRuns} runs (${label})`;
+}
+
+function formatShipFrequency(freq: number, count: number): string {
+	if (freq >= 1) {
+		return `${freq.toFixed(1)}/day (${count} total)`;
+	}
+	const days = 1 / freq;
+	return `every ${days.toFixed(0)} days (${count} total)`;
+}
+
+function formatLeadTime(hours: number): string {
+	return formatDuration(hours);
+}
+
 /**
  * Generate contextual quick wins based on flagged metrics
  */
@@ -186,6 +222,30 @@ function generateQuickWins(metrics: SprintMetrics, thresholds: Thresholds): stri
 	// Solo contributor
 	if (metrics.collaboratorCount <= 1 && metrics.throughputCount > 0) {
 		tips.push('**Collaboration** — Solo work is fine for focused sprints. When possible, even async review from a teammate adds perspective.');
+	}
+
+	// PR Size
+	if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeCritical) {
+		tips.push('**PR size** — PRs over 1000 lines are hard to review well. Breaking work into smaller, reviewable chunks improves quality and speed.');
+	} else if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeWarning) {
+		tips.push('**PR size** — Large PRs slow reviews and hide bugs. Consider splitting into focused, incremental changes.');
+	}
+
+	// Build Success
+	if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical) {
+		tips.push('**Build health** — Build success below 75% means broken builds are the norm. Prioritize fixing flaky tests and build stability.');
+	} else if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning) {
+		tips.push('**Build health** — Build failures above 10% slow everyone down. Investigate the most common failure patterns.');
+	}
+
+	// Lead Time
+	if (metrics.leadTimeMedianHours !== null && metrics.leadTimeMedianHours >= 168) {
+		tips.push('**Lead time** — A week or more from commit to production suggests deployment friction. Smaller, more frequent releases reduce risk.');
+	}
+
+	// Ship Frequency
+	if (metrics.shipFrequency !== null && metrics.shipFrequency < 1 / 7) {
+		tips.push('**Ship frequency** — Shipping less than once a week increases batch size and risk. More frequent, smaller releases build confidence.');
 	}
 
 	return tips;

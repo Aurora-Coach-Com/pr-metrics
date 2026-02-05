@@ -15,6 +15,10 @@ export interface Thresholds {
     concentrationCritical: number;
     reviewDepthWarning: number;
     reviewDepthCritical: number;
+    prSizeWarning: number;
+    prSizeCritical: number;
+    buildSuccessWarning: number;
+    buildSuccessCritical: number;
 }
 export interface Config {
     token: string;
@@ -27,6 +31,8 @@ export interface Config {
     issueNumber?: number;
     auroraApiKey?: string;
     auroraTeamId?: string;
+    workflowFilter?: string;
+    deploymentEnvironment?: string;
     thresholds: Thresholds;
 }
 export declare function getConfig(): Config;

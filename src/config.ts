@@ -19,6 +19,10 @@ export interface Thresholds {
 	concentrationCritical: number;
 	reviewDepthWarning: number;
 	reviewDepthCritical: number;
+	prSizeWarning: number;
+	prSizeCritical: number;
+	buildSuccessWarning: number;
+	buildSuccessCritical: number;
 }
 
 export interface Config {
@@ -39,6 +43,10 @@ export interface Config {
 	// Aurora integration (optional)
 	auroraApiKey?: string;
 	auroraTeamId?: string;
+
+	// Filters
+	workflowFilter?: string;
+	deploymentEnvironment?: string;
 
 	// Thresholds (configurable)
 	thresholds: Thresholds;
@@ -92,6 +100,15 @@ export function getConfig(): Config {
 		? core.getInput('aurora-team-id')
 		: process.env.AURORA_TEAM_ID;
 
+	// Filters
+	const workflowFilter = isGitHubAction
+		? core.getInput('workflow-filter')
+		: process.env.INPUT_WORKFLOW_FILTER;
+
+	const deploymentEnvironment = isGitHubAction
+		? core.getInput('deployment-environment')
+		: process.env.INPUT_DEPLOYMENT_ENVIRONMENT;
+
 	// Thresholds (configurable with sensible defaults)
 	const thresholds: Thresholds = {
 		cycleTimeWarningHours: parseFloat(
@@ -129,6 +146,10 @@ export function getConfig(): Config {
 		concentrationCritical: 0.75,
 		reviewDepthWarning: 0.5,
 		reviewDepthCritical: 0.2,
+		prSizeWarning: 400,
+		prSizeCritical: 1000,
+		buildSuccessWarning: 90,
+		buildSuccessCritical: 75,
 	};
 
 	return {
@@ -142,6 +163,8 @@ export function getConfig(): Config {
 		issueNumber,
 		auroraApiKey: auroraApiKey || undefined,
 		auroraTeamId: auroraTeamId || undefined,
+		workflowFilter: workflowFilter || undefined,
+		deploymentEnvironment: deploymentEnvironment || undefined,
 		thresholds,
 	};
 }

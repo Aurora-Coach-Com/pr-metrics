@@ -9,7 +9,7 @@ import { SprintMetrics } from './metrics';
 import { Thresholds } from './config';
 
 export interface Insight {
-	type: 'knowledge-silo' | 'cycle-time-regression' | 'wip-overload' | 'review-bottleneck' | 'shallow-reviews';
+	type: 'knowledge-silo' | 'cycle-time-regression' | 'wip-overload' | 'review-bottleneck' | 'shallow-reviews' | 'large-prs' | 'build-failures' | 'slow-lead-time';
 	severity: 'info' | 'warning' | 'critical';
 	message: string;
 }
@@ -96,6 +96,45 @@ export function detectInsights(metrics: SprintMetrics, thresholds: Thresholds): 
 		});
 	}
 
+	// Large PRs detection
+	if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeCritical) {
+		insights.push({
+			type: 'large-prs',
+			severity: 'warning',
+			message: `Median PR size at ${Math.round(metrics.prSizeMedian)} lines — PRs this large are hard to review effectively`,
+		});
+	} else if (metrics.prSizeMedian !== null && metrics.prSizeMedian >= thresholds.prSizeWarning) {
+		insights.push({
+			type: 'large-prs',
+			severity: 'info',
+			message: `Median PR size at ${Math.round(metrics.prSizeMedian)} lines — consider smaller, focused changes`,
+		});
+	}
+
+	// Build failures detection
+	if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical) {
+		insights.push({
+			type: 'build-failures',
+			severity: 'critical',
+			message: `Build success rate at ${metrics.buildSuccessRate}% — broken builds are blocking delivery`,
+		});
+	} else if (metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning) {
+		insights.push({
+			type: 'build-failures',
+			severity: 'warning',
+			message: `Build success rate at ${metrics.buildSuccessRate}% — build reliability is degrading`,
+		});
+	}
+
+	// Slow lead time detection
+	if (metrics.leadTimeMedianHours !== null && metrics.leadTimeMedianHours >= 168) {
+		insights.push({
+			type: 'slow-lead-time',
+			severity: 'warning',
+			message: `Lead time at ${Math.round(metrics.leadTimeMedianHours / 24)} days — significant deployment lag`,
+		});
+	}
+
 	// Sort by severity (critical first)
 	const severityOrder = { critical: 0, warning: 1, info: 2 };
 	insights.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
@@ -115,7 +154,8 @@ export function getHealthEmoji(metrics: SprintMetrics, thresholds: Thresholds): 
 
 	if (
 		metrics.cycleTimeMedianHours >= thresholds.cycleTimeCriticalHours ||
-		wipRatio >= thresholds.wipCriticalRatio
+		wipRatio >= thresholds.wipCriticalRatio ||
+		(metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessCritical)
 	) {
 		return '🔴';
 	}
@@ -123,7 +163,8 @@ export function getHealthEmoji(metrics: SprintMetrics, thresholds: Thresholds): 
 	if (
 		metrics.cycleTimeMedianHours >= thresholds.cycleTimeWarningHours ||
 		wipRatio >= thresholds.wipWarningRatio ||
-		metrics.concentrationRatio >= thresholds.concentrationWarning
+		metrics.concentrationRatio >= thresholds.concentrationWarning ||
+		(metrics.buildSuccessRate !== null && metrics.buildSuccessRate < thresholds.buildSuccessWarning)
 	) {
 		return '🟡';
 	}

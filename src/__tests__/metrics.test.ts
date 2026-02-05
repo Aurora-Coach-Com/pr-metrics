@@ -353,3 +353,203 @@ describe('calculateMetrics — trend', () => {
 		assert.strictEqual(metrics.cycleTimeTrend, 'stable');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// calculateMetrics — backward compatibility
+// ---------------------------------------------------------------------------
+
+describe('calculateMetrics — backward compatibility', () => {
+	it('works without options parameter', () => {
+		const pr = makePR({ number: 1 });
+		const metrics = calculateMetrics([pr], new Map(), 0);
+		assert.strictEqual(metrics.prSizeMedian, null);
+		assert.strictEqual(metrics.prSizeCategory, null);
+		assert.strictEqual(metrics.buildSuccessRate, null);
+		assert.strictEqual(metrics.buildTotalRuns, null);
+		assert.strictEqual(metrics.shipFrequency, null);
+		assert.strictEqual(metrics.shipCount, null);
+		assert.strictEqual(metrics.shipSource, null);
+		assert.strictEqual(metrics.leadTimeMedianHours, null);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// calculateMetrics — PR size
+// ---------------------------------------------------------------------------
+
+describe('calculateMetrics — PR size', () => {
+	it('computes median PR size from options', () => {
+		const pr = makePR({ number: 1 });
+		const prSizes = new Map([[1, { additions: 80, deletions: 20 }]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { prSizes });
+		assert.strictEqual(metrics.prSizeMedian, 100);
+	});
+
+	it('categorizes small PRs (<100 lines)', () => {
+		const pr = makePR({ number: 1 });
+		const prSizes = new Map([[1, { additions: 30, deletions: 20 }]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { prSizes });
+		assert.strictEqual(metrics.prSizeCategory, 'small');
+	});
+
+	it('categorizes medium PRs (100-399 lines)', () => {
+		const pr = makePR({ number: 1 });
+		const prSizes = new Map([[1, { additions: 200, deletions: 50 }]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { prSizes });
+		assert.strictEqual(metrics.prSizeCategory, 'medium');
+	});
+
+	it('categorizes large PRs (>=400 lines)', () => {
+		const pr = makePR({ number: 1 });
+		const prSizes = new Map([[1, { additions: 300, deletions: 200 }]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { prSizes });
+		assert.strictEqual(metrics.prSizeCategory, 'large');
+	});
+
+	it('computes median of multiple PRs', () => {
+		const prs = [makePR({ number: 1 }), makePR({ number: 2 }), makePR({ number: 3 })];
+		const prSizes = new Map([
+			[1, { additions: 10, deletions: 10 }],   // 20
+			[2, { additions: 100, deletions: 50 }],   // 150
+			[3, { additions: 500, deletions: 500 }],   // 1000
+		]);
+		const metrics = calculateMetrics(prs, new Map(), 0, { prSizes });
+		assert.strictEqual(metrics.prSizeMedian, 150); // median of [20, 150, 1000]
+	});
+
+	it('returns null when prSizes is empty', () => {
+		const pr = makePR({ number: 1 });
+		const metrics = calculateMetrics([pr], new Map(), 0, { prSizes: new Map() });
+		assert.strictEqual(metrics.prSizeMedian, null);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// calculateMetrics — build success
+// ---------------------------------------------------------------------------
+
+describe('calculateMetrics — build success', () => {
+	it('computes build success rate', () => {
+		const pr = makePR({ number: 1 });
+		const workflowRuns = { totalRuns: 50, successCount: 45, failureCount: 5 };
+		const metrics = calculateMetrics([pr], new Map(), 0, { workflowRuns });
+		assert.strictEqual(metrics.buildSuccessRate, 90);
+		assert.strictEqual(metrics.buildTotalRuns, 50);
+	});
+
+	it('rounds build success rate', () => {
+		const pr = makePR({ number: 1 });
+		const workflowRuns = { totalRuns: 3, successCount: 2, failureCount: 1 };
+		const metrics = calculateMetrics([pr], new Map(), 0, { workflowRuns });
+		assert.strictEqual(metrics.buildSuccessRate, 67); // 66.67 rounds to 67
+	});
+
+	it('returns null when workflowRuns is null', () => {
+		const pr = makePR({ number: 1 });
+		const metrics = calculateMetrics([pr], new Map(), 0, { workflowRuns: null });
+		assert.strictEqual(metrics.buildSuccessRate, null);
+	});
+
+	it('returns null when totalRuns is 0', () => {
+		const pr = makePR({ number: 1 });
+		const workflowRuns = { totalRuns: 0, successCount: 0, failureCount: 0 };
+		const metrics = calculateMetrics([pr], new Map(), 0, { workflowRuns });
+		assert.strictEqual(metrics.buildSuccessRate, null);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// calculateMetrics — ship frequency
+// ---------------------------------------------------------------------------
+
+describe('calculateMetrics — ship frequency', () => {
+	it('computes ship frequency from events and period days', () => {
+		const pr = makePR({ number: 1 });
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date('2025-01-05'), source: 'deployment' as const, label: 'prod' },
+			{ id: 2, sha: 'b', createdAt: new Date('2025-01-10'), source: 'deployment' as const, label: 'prod' },
+		];
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents, periodDays: 14 });
+		assert.ok(Math.abs(metrics.shipFrequency! - 2 / 14) < 0.001);
+		assert.strictEqual(metrics.shipCount, 2);
+		assert.strictEqual(metrics.shipSource, 'deployment');
+	});
+
+	it('uses first event source for shipSource', () => {
+		const pr = makePR({ number: 1 });
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date('2025-01-05'), source: 'release' as const, label: 'v1.0' },
+		];
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents, periodDays: 7 });
+		assert.strictEqual(metrics.shipSource, 'release');
+	});
+
+	it('returns null when no ship events', () => {
+		const pr = makePR({ number: 1 });
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents: [], periodDays: 14 });
+		assert.strictEqual(metrics.shipFrequency, null);
+	});
+
+	it('defaults periodDays to 14', () => {
+		const pr = makePR({ number: 1 });
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date('2025-01-05'), source: 'deployment' as const, label: 'prod' },
+		];
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents });
+		assert.ok(Math.abs(metrics.shipFrequency! - 1 / 14) < 0.001);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// calculateMetrics — lead time
+// ---------------------------------------------------------------------------
+
+describe('calculateMetrics — lead time', () => {
+	it('computes lead time from first commit to ship event', () => {
+		const pr = makePR({
+			number: 1,
+			createdAt: new Date('2025-01-01T00:00:00Z'),
+			mergedAt: new Date('2025-01-02T00:00:00Z'),
+		});
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date('2025-01-03T00:00:00Z'), source: 'deployment' as const, label: 'prod' },
+		];
+		const firstCommitDates = new Map([[1, new Date('2025-01-01T00:00:00Z')]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents, firstCommitDates });
+		// first commit Jan 1 → ship Jan 3 = 48 hours
+		assert.strictEqual(metrics.leadTimeMedianHours, 48);
+	});
+
+	it('uses earliest ship event after merge', () => {
+		const pr = makePR({
+			number: 1,
+			createdAt: new Date('2025-01-01T00:00:00Z'),
+			mergedAt: new Date('2025-01-02T00:00:00Z'),
+		});
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date('2025-01-01T12:00:00Z'), source: 'deployment' as const, label: 'prod' }, // before merge
+			{ id: 2, sha: 'b', createdAt: new Date('2025-01-03T00:00:00Z'), source: 'deployment' as const, label: 'prod' }, // after merge
+			{ id: 3, sha: 'c', createdAt: new Date('2025-01-04T00:00:00Z'), source: 'deployment' as const, label: 'prod' }, // later
+		];
+		const firstCommitDates = new Map([[1, new Date('2025-01-01T00:00:00Z')]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents, firstCommitDates });
+		// first commit Jan 1 → first ship after merge (Jan 3) = 48 hours
+		assert.strictEqual(metrics.leadTimeMedianHours, 48);
+	});
+
+	it('returns null when no first commit dates', () => {
+		const pr = makePR({ number: 1 });
+		const shipEvents = [
+			{ id: 1, sha: 'a', createdAt: new Date(), source: 'deployment' as const, label: 'prod' },
+		];
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents, firstCommitDates: new Map() });
+		assert.strictEqual(metrics.leadTimeMedianHours, null);
+	});
+
+	it('returns null when no ship events', () => {
+		const pr = makePR({ number: 1 });
+		const firstCommitDates = new Map([[1, new Date()]]);
+		const metrics = calculateMetrics([pr], new Map(), 0, { shipEvents: [], firstCommitDates });
+		assert.strictEqual(metrics.leadTimeMedianHours, null);
+	});
+});

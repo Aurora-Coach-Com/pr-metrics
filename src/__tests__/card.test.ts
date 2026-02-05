@@ -19,6 +19,10 @@ const defaultThresholds: Thresholds = {
 	concentrationCritical: 0.75,
 	reviewDepthWarning: 0.5,
 	reviewDepthCritical: 0.2,
+	prSizeWarning: 400,
+	prSizeCritical: 1000,
+	buildSuccessWarning: 90,
+	buildSuccessCritical: 75,
 };
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -41,6 +45,14 @@ function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
 		cycleTimeP90Hours: 30,
 		throughputCount: 5,
 		wipCount: 2,
+		prSizeMedian: null,
+		prSizeCategory: null,
+		buildSuccessRate: null,
+		buildTotalRuns: null,
+		shipFrequency: null,
+		shipCount: null,
+		shipSource: null,
+		leadTimeMedianHours: null,
 		reviewTurnaroundMedianHours: 8,
 		collaboratorCount: 4,
 		concentrationRatio: 0.3,
@@ -470,5 +482,172 @@ describe('renderHealthCard — quick wins with custom thresholds', () => {
 			relaxed,
 		);
 		assert.ok(!card.includes('**Cycle time**'));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Conditional rows for new metrics
+// ---------------------------------------------------------------------------
+
+describe('renderHealthCard — conditional rows', () => {
+	it('shows PR Size row when data exists', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ prSizeMedian: 245, prSizeCategory: 'medium' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('PR Size'));
+		assert.ok(card.includes('245 lines (medium)'));
+	});
+
+	it('does not show PR Size row when data is null', () => {
+		const card = renderHealthCard(makeConfig(), makeMetrics(), defaultThresholds);
+		assert.ok(!card.includes('PR Size'));
+	});
+
+	it('shows Build Success row when data exists', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ buildSuccessRate: 92, buildTotalRuns: 48 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('Build Success'));
+		assert.ok(card.includes('92% of 48 runs (healthy)'));
+	});
+
+	it('shows degraded build success label', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ buildSuccessRate: 80, buildTotalRuns: 20 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('80% of 20 runs (degraded)'));
+	});
+
+	it('shows failing build success label', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ buildSuccessRate: 60, buildTotalRuns: 10 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('60% of 10 runs (failing)'));
+	});
+
+	it('does not show Build Success row when data is null', () => {
+		const card = renderHealthCard(makeConfig(), makeMetrics(), defaultThresholds);
+		assert.ok(!card.includes('Build Success'));
+	});
+
+	it('shows Deploy Frequency when source is deployment', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ shipFrequency: 1.5, shipCount: 21, shipSource: 'deployment' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('Deploy Frequency'));
+		assert.ok(card.includes('1.5/day (21 total)'));
+	});
+
+	it('shows Release Frequency when source is release', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ shipFrequency: 0.2, shipCount: 3, shipSource: 'release' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('Release Frequency'));
+		assert.ok(card.includes('every 5 days (3 total)'));
+	});
+
+	it('does not show ship frequency row when data is null', () => {
+		const card = renderHealthCard(makeConfig(), makeMetrics(), defaultThresholds);
+		assert.ok(!card.includes('Deploy Frequency'));
+		assert.ok(!card.includes('Release Frequency'));
+	});
+
+	it('shows Lead Time row when data exists', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ leadTimeMedianHours: 36 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('Lead Time'));
+		assert.ok(card.includes('1.5 days'));
+	});
+
+	it('does not show Lead Time row when data is null', () => {
+		const card = renderHealthCard(makeConfig(), makeMetrics(), defaultThresholds);
+		assert.ok(!card.includes('Lead Time'));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Quick wins for new metrics
+// ---------------------------------------------------------------------------
+
+describe('renderHealthCard — new metric quick wins', () => {
+	it('shows PR size warning tip', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ prSizeMedian: 500, prSizeCategory: 'large' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**PR size**'));
+		assert.ok(card.includes('Large PRs slow reviews'));
+	});
+
+	it('shows PR size critical tip', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ prSizeMedian: 1200, prSizeCategory: 'large' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**PR size**'));
+		assert.ok(card.includes('PRs over 1000'));
+	});
+
+	it('shows build health warning tip', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ buildSuccessRate: 85, buildTotalRuns: 20 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**Build health**'));
+		assert.ok(card.includes('Build failures above 10%'));
+	});
+
+	it('shows build health critical tip', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ buildSuccessRate: 60, buildTotalRuns: 10 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**Build health**'));
+		assert.ok(card.includes('Build success below 75%'));
+	});
+
+	it('shows lead time warning tip', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ leadTimeMedianHours: 200 }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**Lead time**'));
+	});
+
+	it('shows ship frequency tip when less than weekly', () => {
+		const card = renderHealthCard(
+			makeConfig(),
+			makeMetrics({ shipFrequency: 0.1, shipCount: 1, shipSource: 'deployment' }),
+			defaultThresholds,
+		);
+		assert.ok(card.includes('**Ship frequency**'));
+	});
+
+	it('does not show new metric tips when values are null', () => {
+		const card = renderHealthCard(makeConfig(), makeMetrics(), defaultThresholds);
+		assert.ok(!card.includes('**PR size**'));
+		assert.ok(!card.includes('**Build health**'));
+		assert.ok(!card.includes('**Lead time**'));
+		assert.ok(!card.includes('**Ship frequency**'));
 	});
 });

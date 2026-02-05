@@ -29,6 +29,13 @@ inputs:
     description: 'Aurora Coach team ID (required if aurora-api-key is set)'
     required: false
 
+  workflow-filter:
+    description: 'Filter builds to a specific workflow (name or filename, e.g., "ci.yml")'
+    required: false
+  deployment-environment:
+    description: 'Filter deployments to a specific environment (e.g., "production")'
+    required: false
+
   # Threshold configuration (adjust to your team's context)
   cycle-time-warning-hours:
     description: 'Cycle time threshold for warning (default: 72 = 3 days)'
@@ -64,6 +71,14 @@ outputs:
     description: 'Number of PRs merged in the sprint'
   review-turnaround-hours:
     description: 'Median time to first review in hours'
+  pr-size-median:
+    description: 'Median PR size in lines (additions + deletions)'
+  build-success-rate:
+    description: 'Build success rate as percentage (0-100)'
+  ship-frequency:
+    description: 'Deployments or releases per day during the sprint period'
+  lead-time-hours:
+    description: 'Median lead time from first commit to deploy/release in hours'
 
 runs:
   using: 'node20'
