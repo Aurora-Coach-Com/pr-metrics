@@ -1,4 +1,4 @@
-name: 'PR Metrics Health Card'
+name: 'Sprint Health Card by Aurora Coach'
 description: 'Generate health metrics from GitHub PR activity'
 author: 'Aurora Coach'
 
