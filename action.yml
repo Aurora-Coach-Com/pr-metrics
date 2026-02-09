@@ -10,7 +10,7 @@ inputs:
   github-token:
     description: 'GitHub token for API access (defaults to GITHUB_TOKEN)'
     required: false
-    default: ${{ github.token }}
+    default: '${{ github.token }}'
   sprint-length-days:
     description: 'Length of sprint in days'
     required: false
